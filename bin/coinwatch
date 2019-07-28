@@ -28,6 +28,7 @@ from __future__ import unicode_literals
 try:
     # For Python 3.0 and later
     from urllib.request import Request, urlopen
+    from urllib.parse import urlencode
     from urllib.error import URLError, HTTPError
 except ImportError:
     # Fall back to Python 2's urllib2
@@ -63,7 +64,7 @@ except Exception:
 NAME = 'coinwatch'
 AUTHOR = 'cytopia'
 VERSION = '0.15'
-API_URL = 'https://api.coinmarketcap.com/v1/ticker/?limit=0'
+API_URL = 'https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest'
 
 
 # Row settings
@@ -169,6 +170,8 @@ EXAMPLE_CONFIG = '''---
 
 # Configure coinwatch
 config:
+  # MANDATORY provide your Coinmarketcap API key
+  apikey:
   # Specify the column to sort this table
   # Overwrite via -s <column>
   sort: name
@@ -766,7 +769,7 @@ class Fetch(object):
     '''Fetch URL from remote'''
 
     __settings = {
-        'randomize_ua': True,
+        'randomize_ua': False,
     }
     __useragents = [
         'Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.0; .NET CLR 1.0.3705)',
@@ -789,9 +792,10 @@ class Fetch(object):
         'Opera/9.80 (Windows NT 5.1; U; en) Presto/2.10.289 Version/12.01'
     ]
 
-    def __init__(self, convert, randomize_ua=True):
+    def __init__(self, apikey, convert, randomize_ua=False):
         '''Initialize'''
         self.__settings = {
+            'apikey': apikey,
             'convert': convert,
             'randomize_ua': randomize_ua
         }
@@ -804,12 +808,13 @@ class Fetch(object):
     def fetch(self, url):
         '''Fetch url and return its body'''
 
-        headers = dict()
-        if self.__settings['randomize_ua']:
-            headers = {'User-Agent': self.__get_ua()}
+        headers = {'X-CMC_PRO_API_KEY': str(self.__settings['apikey'])}
 
-        if 'convert' in self.__settings:
-            url += '&convert=' + str(self.__settings['convert']).upper()
+        if self.__settings['randomize_ua']:
+            headers['User-Agent'] = self.__get_ua()
+
+        data = urlencode({'convert': str(self.__settings['convert']).upper()})
+        url = url + '?' + data
 
         req = Request(url, headers=headers)
         try:
@@ -891,7 +896,8 @@ class Coinwatch(object):
         amount = Coinwatch.__get_amount(trade)
         invest = Coinwatch.__get_invest(trade)
         buyprice = Coinwatch.__get_price(trade)
-        nowprice = Num.get(currency['price_' + convert])
+        quote = currency['quote'][convert]
+        nowprice = Num.get(quote['price'])
 
         # Calculate diffprice, wealth, profit and percent
         diffprice = Num.sub(nowprice, buyprice)
@@ -900,18 +906,18 @@ class Coinwatch(object):
         percent = Num.sub(Num.percent(wealth, invest), 100)
 
         # Normalize values from remote
-        if not Num.isnumber(currency['percent_change_1h']):
-            currency['percent_change_1h'] = Num.get('0.0')
-        if not Num.isnumber(currency['percent_change_24h']):
-            currency['percent_change_24h'] = Num.get('0.0')
-        if not Num.isnumber(currency['percent_change_7d']):
-            currency['percent_change_7d'] = Num.get('0.0')
-        if not Num.isnumber(currency['24h_volume_' + convert]):
-            currency['24h_volume_' + convert] = Num.get('0.0')
-        if not Num.isnumber(currency['market_cap_' + convert]):
-            currency['market_cap_' + convert] = Num.get('0.0')
-        if not Num.isnumber(currency['available_supply']):
-            currency['available_supply'] = Num.get('0.0')
+        if not Num.isnumber(quote['percent_change_1h']):
+            quote['percent_change_1h'] = Num.get('0.0')
+        if not Num.isnumber(quote['percent_change_24h']):
+            quote['percent_change_24h'] = Num.get('0.0')
+        if not Num.isnumber(quote['percent_change_7d']):
+            quote['percent_change_7d'] = Num.get('0.0')
+        if not Num.isnumber(quote['volume_24h']):
+            quote['volume_24h'] = Num.get('0.0')
+        if not Num.isnumber(quote['market_cap']):
+            quote['market_cap'] = Num.get('0.0')
+        if not Num.isnumber(currency['circulating_supply']):
+            currency['circulating_supply'] = Num.get('0.0')
         if not Num.isnumber(currency['total_supply']):
             currency['total_supply'] = Num.get('0.0')
         if not Num.isnumber(currency['max_supply']):
@@ -931,12 +937,12 @@ class Coinwatch(object):
             'wealth':     wealth,
             'profit':     profit,
             'percent':    percent,
-            'percent1h':  currency['percent_change_1h'],
-            'percent24h': currency['percent_change_24h'],
-            'percent7d':  currency['percent_change_7d'],
-            'vol_24h':    currency['24h_volume_' + convert],
-            'marketcap':  currency['market_cap_' + convert],
-            'supply_a':   currency['available_supply'],
+            'percent1h':  quote['percent_change_1h'],
+            'percent24h': quote['percent_change_24h'],
+            'percent7d':  quote['percent_change_7d'],
+            'vol_24h':    quote['volume_24h'],
+            'marketcap':  quote['market_cap'],
+            'supply_a':   currency['circulating_supply'],
             'supply_t':   currency['total_supply'],
             'supply_m':   currency['max_supply']
         }
@@ -1045,13 +1051,13 @@ class Coinwatch(object):
         # # Add headline
         tbl.add_header_row({a: col_settings[a]['head'] for a in col_settings.keys()})
 
-        for currency in currencies:
+        for currency in currencies['data']:
 
             # Do we track a currency?
             # (Remote currency is found in local config)
-            if currency['id'] in trades:
+            if currency['slug'] in trades:
 
-                name = currency['id']
+                name = currency['slug']
 
                 # Only proceed if trade happened (defined in config)
                 if trades[name]:
@@ -1060,7 +1066,7 @@ class Coinwatch(object):
                     for trade in trades[name]:
 
                         # Extract and format row values
-                        convert = self.__settings['convert']
+                        convert = str(self.__settings['convert']).upper()
                         values = self.__extract_trade_row_values(currency, trade, convert)
                         fvalues = self.__format_trade_row_values(values)
 
@@ -1099,7 +1105,7 @@ def logerr(*args):
 def to_yaml(string):
     '''Convert string to yaml'''
     try:
-        data = yaml.load(string)
+        data = yaml.load(string, Loader=yaml.FullLoader)
     except yaml.YAMLError as err:
         logerr('[ERR] Cannot convert string to yaml')
         logerr('[ERR] ', str(err))
@@ -1288,6 +1294,11 @@ def validate_config(config):
                 logerr('[ERR] Allowed values: thin, thick and ascii')
                 sys.exit(2)
 
+    # Validate API key
+    if not config['config']['apikey']:
+        print('No API key found, check your config')
+        sys.exit(0)
+
     # Validate trades
     if not config['trades']:
         print('No trades found, check your config')
@@ -1296,6 +1307,8 @@ def validate_config(config):
 
 def build_settings(settings, config, default_columns, default_sort, default_order):
     '''Merge settings from command line and config file'''
+
+    settings['apikey'] = config['config']['apikey']
 
     # Apply column sort
     if settings['sort']:
@@ -1500,7 +1513,7 @@ def main(argv):
     # Merge cmd args and config file settings
     settings = build_settings(settings, config, COL_DEFAULT, None, 'asc')
     # Get remote price info
-    url = Fetch(settings['convert'])
+    url = Fetch(settings['apikey'], settings['convert'])
     try:
         currencies = to_json(url.fetch(API_URL))
     except HTTPError as err:
